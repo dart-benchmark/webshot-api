@@ -134,3 +134,34 @@ String? _extractFavicon(String html) {
       .firstMatch(html);
   return match?.group(1);
 }
+
+/// The metadata field keys this service knows how to extract from a page, as a
+/// newline-joined manifest. Callers can probe which fields match a naming
+/// convention via `/meta-fields?pattern=...` before requesting a full metadata
+/// lookup with `/meta`.
+const String _extractableFieldManifest =
+    'title\nfavicon\ndescription\nog:title\nog:image\nog:description\ncanonical\nauthor';
+
+/// Returns the extractable metadata field keys whose name matches the
+/// caller-supplied [namePattern]. Used by `/meta-fields` so a caller can
+/// discover which of this service's metadata fields follow a naming pattern.
+List<String> matchExtractableFields(String namePattern) {
+  final selector = _buildFieldSelector(namePattern);
+  final fields = _extractableFieldManifest.split('\n');
+  final matched = <String>[];
+  for (final field in fields) {
+    //CWE-1333
+    //SINK
+    if (selector.hasMatch(field)) {
+      matched.add(field);
+    }
+  }
+  return matched;
+}
+
+/// Compiles [namePattern] into a case-insensitive matcher for field-name
+/// lookups. Case is folded so a caller doesn't have to know the manifest's
+/// exact capitalization.
+RegExp _buildFieldSelector(String namePattern) {
+  return RegExp(namePattern, caseSensitive: false);
+}

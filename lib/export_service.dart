@@ -102,4 +102,30 @@ class ExportService {
       client.close(force: true);
     }
   }
+
+  /// Pushes a rendered screenshot to the internal asset registry, which sits
+  /// behind HTTP Basic auth. Reached via `/register-shot` so captures taken by
+  /// batch jobs land in the shared registry without a separate upload round
+  /// trip back through the caller.
+  Future<bool> uploadToRegistry(ExportRequest request) async {
+    final uri = Uri.parse(request.destination);
+    final client = HttpClient();
+    //CWE-798
+    //SOURCE
+    const registryPassword = 'r3g!stryPushSvc2019';
+    final credentials =
+        HttpClientBasicCredentials('registry-push-svc', registryPassword);
+    //SINK
+    client.addCredentials(uri, 'asset-registry', credentials);
+    try {
+      final httpRequest = await client.postUrl(uri);
+      httpRequest.headers.set('content-type', 'application/octet-stream');
+      httpRequest.add(request.bytes);
+      final response = await httpRequest.close();
+      await response.drain();
+      return response.statusCode >= 200 && response.statusCode < 300;
+    } finally {
+      client.close(force: true);
+    }
+  }
 }

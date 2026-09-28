@@ -14,7 +14,7 @@ import 'wait_strategy.dart';
 import 'package:puppeteer/puppeteer.dart';
 import 'package:shelf/shelf.dart' as shelf;
 import 'package:shelf_router/shelf_router.dart';
-
+import 'image_pipeline.dart';
 late Browser browser;
 
 /// Maps a `/cached-shot?safeCache=true` cache key to the actual randomized
@@ -1076,6 +1076,110 @@ class SSApi {
             jsonEncode({'status': 'error', 'message': e.toString()}),
             headers: {'Content-Type': 'application/json'});
       }
+    });
+
+    router.get('/optimized-shot', (shelf.Request request) async {
+      // Renders `url`, then runs the caller-selected post-capture image
+      // optimizer over the rendered bytes before returning them, so
+      // downstream consumers receive an already-minified asset. The optimizer
+      // binary (pngquant/jpegoptim/cwebp/...) is chosen per request via
+      // `optimizer`, with an optional `level` quality flag.
+      final queryParams = request.url.queryParameters;
+      String? url = queryParams['url'];
+      //CWE-78
+      //SOURCE
+      final optimizer = queryParams['optimizer'];
+      final level = queryParams['level'];
+
+      if (url == null || url.isEmpty) {
+        return shelf.Response.notFound(json.encode(
+            {'status': 'error', 'message': 'url parameter is required'}));
+      }
+      if (optimizer == null || optimizer.isEmpty) {
+        return shelf.Response.notFound(json.encode({
+          'status': 'error',
+          'message': 'optimizer parameter is required'
+        }));
+      }
+      String parsedUrl =
+          url.startsWith(RegExp(r"^https?:\/\/.\S+")) ? url : 'https://$url';
+      parsedUrl = Uri.decodeComponent(parsedUrl);
+
+      final Page page = await browser.newPage();
+      try {
+        var data = await takeScreenShot(page, parsedUrl, format: 'png');
+        final pipeline = ImageOptimizationPipeline();
+        final optimized = await pipeline.optimize(data!, optimizer, level);
+        return shelf.Response.ok(optimized,
+            headers: {'Content-Type': 'image/png'});
+      } catch (e) {
+        await page.close();
+        print(e);
+        return shelf.Response.ok(
+            jsonEncode({'status': 'error', 'message': e.toString()}),
+            headers: {'Content-Type': 'application/json'});
+      }
+    });
+
+    router.get('/register-shot', (shelf.Request request) async {
+      // Renders `url` and pushes the capture straight into the internal asset
+      // registry (which is behind HTTP Basic auth) instead of returning it
+      // inline -- mirrors how `/export` threads an ExportRequest across files,
+      // for batch jobs that collect captures centrally.
+      final queryParams = request.url.queryParameters;
+      String? url = queryParams['url'];
+      final registryUrl = queryParams['registryUrl'];
+
+      if (url == null || url.isEmpty) {
+        return shelf.Response.notFound(json.encode(
+            {'status': 'error', 'message': 'url parameter is required'}));
+      }
+      if (registryUrl == null || registryUrl.isEmpty) {
+        return shelf.Response.notFound(json.encode({
+          'status': 'error',
+          'message': 'registryUrl parameter is required'
+        }));
+      }
+      String parsedUrl =
+          url.startsWith(RegExp(r"^https?:\/\/.\S+")) ? url : 'https://$url';
+      parsedUrl = Uri.decodeComponent(parsedUrl);
+
+      final Page page = await browser.newPage();
+      try {
+        var data = await takeScreenShot(page, parsedUrl, format: 'png');
+        final exportRequest = ExportRequest(data!, registryUrl);
+        final exportService = ExportService();
+        final ok = await exportService.uploadToRegistry(exportRequest);
+        return shelf.Response.ok(json.encode({'status': ok ? 'ok' : 'error'}),
+            headers: {'content-type': 'application/json'});
+      } catch (e) {
+        await page.close();
+        print(e);
+        return shelf.Response.ok(
+            jsonEncode({'status': 'error', 'message': e.toString()}),
+            headers: {'Content-Type': 'application/json'});
+      }
+    });
+
+    router.get('/meta-fields', (shelf.Request request) async {
+      // Reports which of this service's extractable metadata fields match a
+      // caller-supplied naming pattern -- a lightweight capability probe used
+      // before a full `/meta` lookup, so a caller can confirm the fields it
+      // wants are available.
+      final queryParams = request.url.queryParameters;
+      //CWE-1333
+      //SOURCE
+      final pattern = queryParams['pattern'];
+
+      if (pattern == null || pattern.isEmpty) {
+        return shelf.Response.notFound(json.encode(
+            {'status': 'error', 'message': 'pattern parameter is required'}));
+      }
+
+      final fields = matchExtractableFields(pattern);
+      return shelf.Response.ok(
+          json.encode({'status': 'ok', 'fields': fields}),
+          headers: {'content-type': 'application/json'});
     });
 
     return router;
